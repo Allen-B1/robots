@@ -1,0 +1,50 @@
+<html>
+    <head>
+        <title>Knockoff Robots</title>
+        <style>
+            .board {
+                position: relative;
+                background: #e2e2e2;
+            }
+            .tile {
+                position: absolute;
+                display: inline-block;
+                width: 32px; height: 32px;
+                outline: 1px solid #fff;
+            }
+            .robot {
+                position: absolute;
+                margin: 8px;
+                width: 16px;
+                height: 16px;
+                background: #aaa;
+                cursor: pointer;
+            }
+            .robot-0 { background: hsl(350, 80%, 60%); }
+            .robot-1 { background: hsl(50, 80%, 60%); }
+            .robot-2 { background: hsl(100, 60%, 60%); }
+            .robot-3 { background: hsl(200, 80%, 60%); }
+
+            .active { outline: 2px solid #888; }
+            .robot-0.active { outline: 2px solid hsl(350, 80%, 30%); }
+            .robot-1.active { outline: 2px solid hsl(50, 80%, 40%); }
+            .robot-2.active { outline: 2px solid hsl(100, 60%, 40%); }
+            .robot-3.active { outline: 2px solid hsl(200, 80%, 40%); }
+
+            .wall-horizontal {
+                position: absolute;
+                width: 32px;
+                height: 4px;
+                margin-top:-2px;
+                background: #111;
+            }
+            .wall-vertical {
+                position: absolute;
+                width: 4px;
+                height: 32px;
+                margin-left:-2px;
+                background: #111;
+            }
+        </style>
+    </head>
+</html>
