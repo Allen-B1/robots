@@ -12,6 +12,10 @@
                 width: 32px; height: 32px;
                 outline: 1px solid #fff;
             }
+            .center {
+                background: #666;
+                outline-color: #666;
+            }
             .robot {
                 position: absolute;
                 margin: 8px;
@@ -25,11 +29,11 @@
             .robot-2 { background: hsl(100, 60%, 60%); }
             .robot-3 { background: hsl(200, 80%, 60%); }
 
-            .active { outline: 2px solid #888; }
-            .robot-0.active { outline: 2px solid hsl(350, 80%, 30%); }
-            .robot-1.active { outline: 2px solid hsl(50, 80%, 40%); }
-            .robot-2.active { outline: 2px solid hsl(100, 60%, 40%); }
-            .robot-3.active { outline: 2px solid hsl(200, 80%, 40%); }
+            .robot:focus { outline: 2px solid #888; }
+            .robot-0:focus { outline: 2px solid hsl(350, 80%, 30%); }
+            .robot-1:focus { outline: 2px solid hsl(50, 80%, 40%); }
+            .robot-2:focus { outline: 2px solid hsl(100, 60%, 40%); }
+            .robot-3:focus { outline: 2px solid hsl(200, 80%, 40%); }
 
             .wall-horizontal {
                 position: absolute;

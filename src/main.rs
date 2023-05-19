@@ -1,10 +1,13 @@
 use std::collections::HashSet;
 
 use leptos::*;
+use leptos::ev::KeyboardEvent;
 mod rand;
 
+type RobotPositions = [usize; 5];
+
 #[derive(Clone)]
-struct Board {
+pub struct Board {
     pub width: usize,
 
     /// A width * (height - 1) size array.
@@ -17,7 +20,8 @@ struct Board {
     /// verticall_walls[i, j] is true.
     pub vertical_walls: Vec<bool>,
 
-    pub robots: [usize; 5]
+    // Initial position of the robots
+    pub initial_positions: RobotPositions
 }
 
 const RED: usize = 0;
@@ -31,12 +35,12 @@ impl Board {
         self.horizontal_walls.len() / self.width + 1
     }
 
-    pub fn empty(width: usize, height: usize) -> Self {
+    pub fn generate(width: usize, height: usize) -> Self {
         let mut board = Board {
             width,
             horizontal_walls: vec![false; width * (height - 1)],
             vertical_walls: vec![false; (width - 1) * height],
-            robots: [0, 1, 2, 3, 4]
+            initial_positions: [0, 1, 2, 3, 4]
         };
 
         let mut used_tiles: HashSet<(usize, usize)> = HashSet::new();
@@ -77,7 +81,28 @@ impl Board {
         board.vertical_walls[rand::uniform(4, 7)+(height-1)*(width-1)] = true;
         board.vertical_walls[rand::uniform(9, 12)+(height-1)*(width-1)] = true;
 
+        // block off center tiles
+        board.vertical_walls[width/2 - 2 + (height/2-1)*(width - 1)] = true;
+        board.vertical_walls[width/2 + 0 + (height/2-1)*(width - 1)] = true;
+        board.vertical_walls[width/2 - 2 + (height/2)*(width - 1)] = true;
+        board.vertical_walls[width/2 + 0 + (height/2)*(width - 1)] = true;
+        board.horizontal_walls[width/2 - 1 + (height/2 - 2)*width] = true;
+        board.horizontal_walls[width/2 + 0 + (height/2 - 2)*width] = true;
+        board.horizontal_walls[width/2 - 1 + (height/2 + 0)*width] = true;
+        board.horizontal_walls[width/2 + 0 + (height/2 + 0)*width] = true;
+
         board
+    }
+
+    /// Returns whether the given tile index
+    /// represents a center (blocked-off) tile.
+    pub fn is_center_tile(&self, tile: usize) -> bool {
+        let x = tile % self.width;
+        let y = tile / self.width;
+        let height = self.height();
+
+        self.width / 2 - 1 <= x && x <= self.width / 2 &&
+            height / 2 - 1 <= y && y <= height / 2
     }
 }
 
@@ -105,9 +130,88 @@ pub fn SimpleCounter(cx: Scope, initial_value: i32) -> impl IntoView {
 }
 
 #[component]
-pub fn BoardWidget(cx: Scope, bouncy: bool) -> impl IntoView {
-    let (board, set_board) = create_signal::<Board>(cx, Board::empty(16, 16));
-    let (active, set_active)  =create_signal(cx, Option::<usize>::None);
+pub fn BoardWidget(cx: Scope, board: ReadSignal<Board>, positions: Option<(ReadSignal<RobotPositions>, WriteSignal<RobotPositions>)>) -> impl IntoView {
+    let (positions, set_positions) = match positions {
+        None => (Signal::derive(cx, move || board().initial_positions), None),
+        Some((a, b)) => (a.into(), Some(b))
+    };
+
+    let keydown = move |robot, evt: KeyboardEvent| {
+        log!("{}", evt.code());
+
+        let mut positions = positions();
+        let horizontal_walls = board().horizontal_walls;
+        let vertical_walls = board().vertical_walls;
+        let width = board().width;
+
+        match evt.code().as_str() {
+            "ArrowDown" => {
+                let wall_pos = horizontal_walls.iter().enumerate()
+                    .filter(|(i, b)| (**b) && (*i % width  == positions[robot] % width))
+                    .map(|(i, _)| i / width)
+                    .filter(|&i| i + 1 > positions[robot] / width)
+                    .next().unwrap_or(board().height() - 1);
+                let robot_pos = positions.iter()
+                    .filter(|&i| i % width == positions[robot] % width)
+                    .map(|i| i / width)
+                    .filter(|&i| i > positions[robot] / width)
+                    .min().map(|i| i - 1).unwrap_or(board().height() - 1);
+                let target_pos = usize::min(wall_pos, robot_pos);
+
+                positions[robot] = positions[robot] % width + target_pos * width;
+                set_positions.unwrap().set(positions);
+            },
+            "ArrowUp" => {
+                let wall_pos = horizontal_walls.iter().enumerate().rev()
+                    .filter(|(i, b)| (**b) && (*i % width  == positions[robot] % width))
+                    .map(|(i, _)| i / width)
+                    .filter(|&i| i < positions[robot] / width)
+                    .next().map(|i| i + 1).unwrap_or(0);
+                let robot_pos = positions.iter()
+                    .filter(|&i| i % width == positions[robot] % width)
+                    .map(|i| i / width)
+                    .filter(|&i| i < positions[robot] / width)
+                    .max().map(|i| i + 1).unwrap_or(0);
+                let target_pos = usize::max(wall_pos, robot_pos);
+
+                positions[robot] = positions[robot] % width + target_pos * width;
+                set_positions.unwrap().set(positions);
+            },
+            "ArrowRight" => {
+                let wall_pos = vertical_walls.iter().enumerate()
+                    .filter(|&(i, b)| (*b && i / (width - 1) == positions[robot] / width))
+                    .map(|(i, _)| i % (width - 1))
+                    .filter(|&i| i + 1 > positions[robot] % width)
+                    .next().map(|i| i).unwrap_or(board().width - 1);
+                let robot_pos = positions.iter()
+                    .filter(|&i| i / width == positions[robot] / width)
+                    .map(|i| i % width)
+                    .filter(|&i| i > positions[robot] % width)
+                    .min().map(|i| i - 1).unwrap_or(board().width - 1);
+                let target_pos = usize::min(wall_pos, robot_pos);
+
+                positions[robot] = (positions[robot] / width) * width + target_pos;
+                set_positions.unwrap().set(positions);
+            },
+            "ArrowLeft" => {
+                let wall_pos = vertical_walls.iter().enumerate().rev()
+                    .filter(|&(i, b)| *b && i / (width - 1) == positions[robot] / width)
+                    .map(|(i, _)| i % (width - 1))
+                    .filter(|&i| i < positions[robot] % width)
+                    .next().map(|i| i + 1).unwrap_or(0);
+                let robot_pos = positions.iter()
+                    .filter(|&i| i / width == positions[robot] / width)
+                    .map(|i| i % width)
+                    .filter(|&i| i < positions[robot] % width)
+                    .max().map(|i| i + 1).unwrap_or(0);
+                let target_pos = usize::max(wall_pos, robot_pos);
+
+                positions[robot] = (positions[robot] / width) * width + target_pos;
+                set_positions.unwrap().set(positions);
+            }
+            _ => {}
+        }
+    };
 
     view !{
         cx, 
@@ -118,7 +222,7 @@ pub fn BoardWidget(cx: Scope, bouncy: bool) -> impl IntoView {
                 view=move |cx, i| {
                     view! {
                         cx, 
-                        <div class="tile" style={
+                        <div class={format!("{} {}", "tile", if board.get().is_center_tile(i) { "center" } else { "" })} style={
                             let width = board.get().width;
                             format!("top:{}px;left:{}px", 32 * (i / width), 32 * (i % width))}></div>
                     }
@@ -130,12 +234,13 @@ pub fn BoardWidget(cx: Scope, bouncy: bool) -> impl IntoView {
                 view=move |cx, i| {
                     view! {
                         cx,
-                        <div class={move || format!("robot robot-{} {}", i, if active.get() == Some(i) { "active" } else { "" })}
-                            on:click=move |_| set_active.set(Some(i))
-                            style={
-                            let width = board.get().width;
-                            let pos = board.get().robots[i];
-                            format!("top:{}px;left:{}px", 32 * (pos/width), 32 * (pos%width))
+                        <div class={move || format!("robot robot-{}", i)}
+                            tabIndex="-1"
+                            on:keydown={move |evt| if set_positions.is_some() { keydown(i, evt) }}
+                            style={move || {
+                                let width = board.get().width;
+                                let pos = positions()[i];
+                                format!("top:{}px;left:{}px", 32 * (pos/width), 32 * (pos%width))}
                         }></div>
                     }
                 }
@@ -181,5 +286,9 @@ pub fn BoardWidget(cx: Scope, bouncy: bool) -> impl IntoView {
 }
 
 pub fn main() {
-    mount_to_body(|cx| view! { cx,  <BoardWidget bouncy={false} /> })
+    mount_to_body(|cx| {
+        let (board, set_board) = create_signal(cx, Board::generate(16, 16));
+        let (positions, set_positions) = create_signal(cx, board().initial_positions);
+        view! { cx,  <BoardWidget board={board} positions={Some((positions, set_positions))} /> }
+    })
 }
