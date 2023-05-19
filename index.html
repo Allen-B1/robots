@@ -16,6 +16,26 @@
                 background: #666;
                 outline-color: #666;
             }
+            .refresh {
+                position: absolute;
+                background: transparent;
+                top: 50%;
+                left: 50%;
+                transform: translate(-50%, -50%);
+                z-index: 2;
+                width: 64px;
+                height: 64px; 
+                cursor: pointer;
+                text-align: center;
+            }
+            .refresh::after {
+                content: "\21BB";
+                font-size: 48px;
+                color: #fff;
+                line-height: 64px;
+                text-align: center;
+                font-family: 'Roboto', sans-serif;
+            }
             .robot {
                 position: absolute;
                 margin: 8px;
@@ -49,6 +69,24 @@
                 margin-left:-2px;
                 background: #111;
             }
+
+            /** Move list */
+            .move-list {
+                display: block;
+                background: #111;
+            }
+            .move { color: #aaa; font-family: 'Roboto', sans-serif;
+                font-size: 24px; 
+                font-weight: bold; }
+            .move-left::before { content: '\2190'; }
+            .move-right::before { content: '\2192'; }
+            .move-up::before { content: '\2191'; }
+            .move-down::before { content: '\2193'; }
+            .move-0 { color: hsl(350, 80%, 60%); }
+            .move-1 { color: hsl(50, 80%, 60%); }
+            .move-2 { color: hsl(100, 60%, 60%); }
+            .move-3 { color: hsl(200, 80%, 60%); }
+
         </style>
     </head>
 </html>
