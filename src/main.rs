@@ -1,8 +1,14 @@
+#![feature(extern_types)]
 use std::collections::HashSet;
 
+use js_sys::Number;
 use leptos::*;
 use leptos::ev::KeyboardEvent;
+use wasm_bindgen::JsValue;
+use wasm_bindgen::prelude::Closure;
 mod rand;
+mod utils;
+mod peer;
 
 #[derive(Clone, Copy)]
 pub enum Direction {
@@ -59,6 +65,7 @@ impl Board {
             vertical_walls: vec![false; (width - 1) * height],
             initial_positions: [0, 1, 2, 3, 4]
         };
+        
 
         let mut used_tiles: HashSet<(usize, usize)> = HashSet::new();
 
@@ -316,12 +323,102 @@ pub fn MoveList(cx: Scope, moves: ReadSignal<Vec<(usize, Direction)>>) -> impl I
     }
 }
 
+#[derive(Clone)]
+pub enum NetworkState {
+    None,
+    Client(peer::DataConnection),
+    Server { peer: peer::Peer, conns: Vec<peer::DataConnection>, initialized: bool }
+}
+
+#[component]
+pub fn Network(cx: Scope, state: RwSignal<NetworkState>) -> impl IntoView {
+    // NOTE: Never directly set `state` to `None`
+
+    let host = move |evt| {
+        let id = format!("{:x}", rand::uniform(0, i32::MAX as usize));
+        let peer = peer::Peer::new(&format!("ripoff-robots-{}", &id), object!{}.as_ref());
+        state.set(NetworkState::Server { peer, conns: vec![], initialized: false });
+    };
+
+    let end_host = move |evt| {
+        log!("destroying");
+        if let NetworkState::Server { peer, .. } = state.get() {
+            log!("destroying");
+            peer.destroy();
+        }
+    };
+
+    view! {
+        cx,
+        <div class="network-state">
+            {move || match state.get() {
+                NetworkState::None => {
+                    view! {
+                        cx, 
+                        <div class="network-state-none">
+                            <button on:click={host} class="network-button-host">"Host"</button>
+                        </div>
+                    }.into_any()
+                },
+                NetworkState::Server { peer, conns, .. } => {
+                    view! {
+                        cx,
+                        <div class="network-state-host">
+                            <div class="network-host-id">"ID: " {format!("{}", &peer.id()["ripoff-robots-".len()..])}</div>
+                            <div>"Connections: "{conns.len()}</div>
+                            <button on:click={end_host}>"End"</button>
+                        </div>
+                    }.into_any()
+                },
+                _ => unimplemented!()
+            }}
+        </div>
+    }
+}
+
 pub fn main() {
     mount_to_body(|cx| {
+        let network_state = create_rw_signal(cx, NetworkState::None);
         let (board, set_board) = create_signal(cx, Board::generate(16, 16));
         let positions = create_rw_signal(cx, board().initial_positions);
         let moves = create_rw_signal(cx, Vec::new());
+
+        create_effect(cx, move |_| {
+            let state = network_state.get();
+            match state {
+                NetworkState::None => {},
+                NetworkState::Server { peer, conns, initialized: false } => {
+                    peer.on("open", &Closure::<dyn Fn()>::new(move || {
+                        log!("connection established to PeerServer")
+                    }).into_js_value());
+
+                    peer.on("close", &Closure::<dyn Fn()>::new(move || {
+                        network_state.update(|state| {
+                            *state = NetworkState::None;
+                        })
+                    }).into_js_value());
+
+
+                    peer.on("connection", &Closure::<dyn Fn(_)>::new(move |conn: peer::DataConnection| {
+                        network_state.update(|state| {
+                            if let NetworkState::Server { conns, .. } = state {
+                                conns.push(conn);
+                            }
+                        })
+                    }).into_js_value());
+
+                    network_state.update(|state| {
+                        if let NetworkState::Server { initialized, .. } = state {
+                            *initialized = true;
+                        }
+                    });
+                },
+                _ => {}
+            }
+        });
+
         view! { cx,  
+            <Network state={network_state} />
             <BoardWidget board={board} positions={Some(positions)} moves={moves} />
             <MoveList moves={moves.read_only()} /> }
     })
