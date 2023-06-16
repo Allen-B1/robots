@@ -2,7 +2,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::board;
 
-
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Message {
@@ -22,8 +21,8 @@ pub enum Message {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct PlayerJoinMessage {
-    pub id: String,
-    pub name: String,
+    pub ids: Vec<String>,
+    pub names: Vec<String>
 }
 
 /// Sent when a player leaves.

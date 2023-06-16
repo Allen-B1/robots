@@ -1,7 +1,7 @@
 #![feature(extern_types)]
-use std::collections::HashSet;
+use std::{collections::{HashSet, BinaryHeap, HashMap}, cmp::Ordering};
 
-use js_sys::Number;
+use js_sys::{Number, Reflect};
 use leptos::*;
 use leptos::ev::KeyboardEvent;
 use wasm_bindgen::JsValue;
@@ -140,6 +140,40 @@ pub enum NetworkState {
     Server { peer: peer::Peer, conns: Vec<peer::DataConnection>, initialized: bool }
 }
 
+#[derive(Clone, PartialEq, Eq)]
+pub struct Bid {
+    timestamp: u32,
+    bid: u32,
+    name: String,
+}
+
+impl PartialOrd for Bid {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(if self.bid < other.bid { 
+            Ordering::Less
+        } else if self.bid > other.bid {
+            Ordering::Greater
+        } else if self.timestamp < other.timestamp {
+            Ordering::Less
+        } else if self.timestamp > other.timestamp {
+            Ordering::Greater
+        } else {
+            Ordering::Equal
+        })
+    }
+}
+impl Ord for Bid {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.partial_cmp(other).unwrap()
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct RoomState {
+    players: HashMap<String, String>,
+    bids: BinaryHeap<Bid>
+}
+
 #[component]
 pub fn Network(cx: Scope, state: RwSignal<NetworkState>) -> impl IntoView {
     // NOTE: Never directly set `state` to `None`
@@ -188,10 +222,20 @@ pub fn Network(cx: Scope, state: RwSignal<NetworkState>) -> impl IntoView {
 
 pub fn main() {
     mount_to_body(|cx| {
+        let room_state: RwSignal<RoomState> = create_rw_signal(cx, Default::default());
         let network_state = create_rw_signal(cx, NetworkState::None);
         let (board, set_board) = create_signal(cx, Board::generate(16, 16));
         let positions = create_rw_signal(cx, board().initial_positions);
         let moves = create_rw_signal(cx, Vec::new());
+
+        // clear room state when network state is set to None
+        create_effect(cx, move |_| {
+            let state = network_state.get();
+            match state {
+                NetworkState::None => { room_state.set(Default::default()); }
+                _ => {}
+            }
+        });
 
         create_effect(cx, move |_| {
             let state = network_state.get();
@@ -208,19 +252,56 @@ pub fn main() {
                         })
                     }).into_js_value());
 
-
                     peer.on("connection", &Closure::<dyn Fn(_)>::new(move |conn: peer::DataConnection| {
+                        let md: JsValue = conn.metadata();
+                        let name = match Reflect::get(&md, &JsValue::from_str("name")).and_then(|v| v.as_string().ok_or(JsValue::NULL)) {
+                            Ok(s) => s,
+                            Err(_) => "Anonymous".to_string()
+                        };
+
                         network_state.update(|state| {
                             if let NetworkState::Server { conns, .. } = state {
-                                conns.push(conn);
+                                // Broadcast the PlayerJoin message
+                                peer::broadcast(&conns,
+                                    &net::Message::PlayerJoin(net::PlayerJoinMessage {
+                                        ids: vec![conn.peer()],
+                                        names: vec![name.clone()]
+                                    })
+                                );
+
+                                // Update network state & room state to include new player
+                                conns.push(conn.clone());
+                                room_state.update(|room| {
+                                    room.players.insert(conn.peer(), name);
+                                });
                             }
                         });
 
-                        conn.send(&serde_wasm_bindgen::to_value(
-                            &net::Message::BoardState(net::BoardStateMessage {
-                                board: board.get(),
+                        // Register event handlers for the connection
+                        let conn_clone = conn.clone();
+                        conn.on("open", &Closure::<dyn Fn()>::new(move || {
+                            peer::send(&conn_clone, 
+                                &net::Message::BoardState(net::BoardStateMessage {
+                                    board: board.get(),
+                                })
+                            );
+                        }).into_js_value());
+
+                        // Broadcast `PlayerLeave` message when
+                        // the player disconnects.
+                        let id =conn.peer();
+                        conn.on("close", &Closure::<dyn Fn()>::new(move || {
+                            let id = id.clone();
+                            network_state.update(move |state| {
+                                if let NetworkState::Server { conns, .. } = state {
+                                    peer::broadcast(&conns, 
+                                        &net::Message::PlayerLeave(net::PlayerLeaveMessage {
+                                            id: id,
+                                        })
+                                    );                                    
+                                };
                             })
-                        ).expect("grrr"));
+                        }).into_js_value());
                     }).into_js_value());
 
                     network_state.update(|state| {
