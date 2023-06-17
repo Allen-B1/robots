@@ -4,7 +4,7 @@ use serde::{Serialize, Deserialize};
 
 use crate::rand;
 
-#[derive(Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Direction {
     Up,
@@ -24,7 +24,7 @@ impl Direction {
 }
 pub type RobotPositions = [usize; 5];
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Board {
     pub width: usize,
 

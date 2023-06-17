@@ -1,3 +1,4 @@
+#![feature(drain_filter)]
 #![feature(extern_types)]
 use std::{collections::{HashSet, BinaryHeap, HashMap}, cmp::Ordering};
 
@@ -11,6 +12,7 @@ mod utils;
 mod peer;
 mod board;
 use board::{Board, RobotPositions, Direction};
+use web_sys::console;
 mod net;
 
 #[component]
@@ -41,7 +43,7 @@ pub fn BoardWidget(cx: Scope, board: ReadSignal<Board>, positions: Option<RwSign
 
     view !{
         cx, 
-        <div class="board" style={format!("width:{}px;height:{}px", 32 * board.get().width, 32 * board.get().height())}>
+        <div class="board" style={move || format!("width:{}px;height:{}px", 32 * board.get().width, 32 * board.get().height())}>
             {move || if moves.get().len() != 0 {
                 Some(view!{ cx, <div class="refresh" on:click={move |_| {
                     moves.update(|v| v.clear());
@@ -182,14 +184,21 @@ pub fn Network(cx: Scope, state: RwSignal<NetworkState>, room_state: RwSignal<Ro
     let name = create_rw_signal(cx, String::new());
     let join = move |evt| {
         log!("joining room {}", room_id.get());
-        let peer = peer::Peer::new("", &JsValue::NULL);
-        let conn = peer.connect(room_id.get().as_str(), &object!{
-            "metadata" => &object!{
-                "name" => name.get()
-            }
-        }.into());
-        log!("connected?");
-        state.set(NetworkState::Client (conn));
+
+        let id = format!("ripoff-robots-client-{:x}", rand::uniform(0, i32::MAX as usize));
+        let peer = peer::Peer::new(&id, &JsValue::NULL);
+
+        let peer_clone = peer.clone();
+        peer.on("open", &Closure::<dyn Fn()>::new(move || {
+            let options = object!{
+                "metadata" => &object!{
+                    "name" => name.get()
+                }
+            };
+            let conn = peer_clone.connect(&format!("ripoff-robots-{}", room_id.get()), &options.into());
+    
+            state.set(NetworkState::Client (conn));
+        }).into_js_value());
     };
 
     let host = move |evt| {
@@ -243,7 +252,7 @@ pub fn Network(cx: Scope, state: RwSignal<NetworkState>, room_state: RwSignal<Ro
                             <div class="network-players">
                                 <h3>"Players"</h3>
                                 <For each={move || room_state.get().players.iter().map(|(id, name)| (id.to_owned(), name.to_owned())).collect::<Vec<_>>()}
-                                    key=|(id,name)| id.to_string()
+                                    key=|(id,_name)| id.to_string()
                                     view=move |cx, (id, name)| {
                                         view!{
                                             cx, 
@@ -268,7 +277,7 @@ pub fn Network(cx: Scope, state: RwSignal<NetworkState>, room_state: RwSignal<Ro
                             <div class="network-players">
                                 <h3>"Players"</h3>
                                 <For each={move || room_state.get().players.iter().map(|(id, name)| (id.to_owned(), name.to_owned())).collect::<Vec<_>>()}
-                                    key=|(id,name)| id.to_string()
+                                    key=|(id,_name)| id.to_string()
                                     view=move |cx, (id, name)| {
                                         view!{
                                             cx, 
@@ -310,9 +319,15 @@ pub fn main() {
             let state = network_state.get();
             match state {
                 NetworkState::None => {},
-                NetworkState::Server { peer, conns, initialized: false } => {
+                NetworkState::Server { peer, initialized: false, .. } => {
+                    let _ = Reflect::set(&js_sys::global(), &"peer".into(), peer.as_ref());
+
                     peer.on("open", &Closure::<dyn Fn()>::new(move || {
                         log!("connection established to PeerServer")
+                    }).into_js_value());
+
+                    peer.on("error", &Closure::<dyn Fn(JsValue)>::new(move |err| {
+                        console::error_1(&err);
                     }).into_js_value());
 
                     peer.on("close", &Closure::<dyn Fn()>::new(move || {
@@ -320,6 +335,8 @@ pub fn main() {
                     }).into_js_value());
 
                     peer.on("connection", &Closure::<dyn Fn(_)>::new(move |conn: peer::DataConnection| {
+                        log!("someone connected :)");
+
                         let md: JsValue = conn.metadata();
                         let name = match Reflect::get(&md, &JsValue::from_str("name")).and_then(|v| v.as_string().ok_or(JsValue::NULL)) {
                             Ok(s) => s,
@@ -332,7 +349,8 @@ pub fn main() {
                                 peer::broadcast(&conns,
                                     &net::Message::PlayerJoin(net::PlayerJoinMessage {
                                         ids: vec![conn.peer()],
-                                        names: vec![name.clone()]
+                                        names: vec![name.clone()],
+                                        scores: vec![0],
                                     })
                                 );
 
@@ -344,29 +362,53 @@ pub fn main() {
                             }
                         });
 
-                        // Register event handlers for the connection
+                        // Send initiating messages
                         let conn_clone = conn.clone();
                         conn.on("open", &Closure::<dyn Fn()>::new(move || {
+                            // Send board state
                             peer::send(&conn_clone, 
                                 &net::Message::BoardState(net::BoardStateMessage {
                                     board: board.get(),
                                 })
                             );
+
+                            // Send current list of players & scores
+                            let mut ids = Vec::new();
+                            let mut names = Vec::new();
+                            let mut scores = Vec::new();
+                            for (id, name) in room_state.get().players.iter() {
+                                ids.push(id.clone());
+                                names.push(name.clone());
+                                scores.push(room_state.get().scores.get(id).map(|x|*x).unwrap_or(0));
+                            }
+
+                            peer::send(&conn_clone, &net::Message::PlayerJoin(net::PlayerJoinMessage {
+                                ids, names, scores
+                            }))
                         }).into_js_value());
 
                         // Broadcast `PlayerLeave` message when
-                        // the player disconnects.
+                        // the player disconnects & update room state.
                         let id =conn.peer();
                         conn.on("close", &Closure::<dyn Fn()>::new(move || {
                             let id = id.clone();
+                            let id_clone = id.clone();
                             network_state.update(move |state| {
                                 if let NetworkState::Server { conns, .. } = state {
+                                    conns.drain_filter(|conn| conn.peer() == id);
+
                                     peer::broadcast(&conns, 
                                         &net::Message::PlayerLeave(net::PlayerLeaveMessage {
                                             id: id,
                                         })
-                                    );                                    
+                                    );
                                 };
+                            });
+
+                            // Update room state
+                            room_state.update(move |state| {
+                                state.players.remove(&id_clone);
+                                state.scores.remove(&id_clone);
                             })
                         }).into_js_value());
                     }).into_js_value());
@@ -379,7 +421,15 @@ pub fn main() {
                 },
 
                 NetworkState::Client(ref conn) => {
-                    log!("setting event handlers...");
+                    log!("setting event for client handlers...");
+
+                    conn.on("error", &Closure::<dyn Fn(JsValue)>::new(move |err| {
+                        console::error_1(&err);
+                    }).into_js_value());
+
+                    conn.on("open", &Closure::<dyn Fn()>::new(move || {
+                        log!("connection opened to host!");
+                    }).into_js_value());
 
                     conn.on("close", &Closure::<dyn Fn()>::new(move || {
                         log!("closing connection...");
@@ -388,14 +438,18 @@ pub fn main() {
 
                     conn.on("data", &Closure::<dyn Fn(JsValue)>::new(move |data| {
                         let data: Result<net::Message, _> = serde_wasm_bindgen::from_value(data);
+                        log!("incoming data: {:?}", &data);
                         match data {
-                            Err(err) => { log!("error parsing incoming message: {:?}", err) },
+                            Err(err) => { error!("error parsing incoming message: {:?}", err) },
                             Ok(net::Message::BoardState(state)) => {
                                 set_board(state.board);
                             },
                             Ok(net::Message::PlayerJoin(msg)) => {
-                                for (id, name) in msg.ids.into_iter().zip(msg.names.into_iter()) {
-                                    room_state.update(|state| {state.players.insert(id, name);});
+                                for ((id, name), score) in msg.ids.into_iter().zip(msg.names.into_iter()).zip(msg.scores.into_iter()) {
+                                    room_state.update(|state| {
+                                        state.players.insert(id.clone(), name);
+                                        state.scores.insert(id, score);
+                                    });
                                 }
                             },
                             Ok(net::Message::PlayerLeave(msg)) => {
