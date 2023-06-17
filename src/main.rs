@@ -171,17 +171,34 @@ impl Ord for Bid {
 #[derive(Clone, Default)]
 pub struct RoomState {
     players: HashMap<String, String>,
+    scores: HashMap<String, u32>,
     bids: BinaryHeap<Bid>
 }
 
 #[component]
-pub fn Network(cx: Scope, state: RwSignal<NetworkState>) -> impl IntoView {
+pub fn Network(cx: Scope, state: RwSignal<NetworkState>, room_state: RwSignal<RoomState>) -> impl IntoView {
     // NOTE: Never directly set `state` to `None`
+    let room_id = create_rw_signal(cx, String::new());
+    let name = create_rw_signal(cx, String::new());
+    let join = move |evt| {
+        log!("joining room {}", room_id.get());
+        let peer = peer::Peer::new("", &JsValue::NULL);
+        let conn = peer.connect(room_id.get().as_str(), &object!{
+            "metadata" => &object!{
+                "name" => name.get()
+            }
+        }.into());
+        log!("connected?");
+        state.set(NetworkState::Client (conn));
+    };
 
     let host = move |evt| {
         let id = format!("{:x}", rand::uniform(0, i32::MAX as usize));
         let peer = peer::Peer::new(&format!("ripoff-robots-{}", &id), object!{}.as_ref());
         state.set(NetworkState::Server { peer, conns: vec![], initialized: false });
+        room_state.update(|state| {
+            state.players.insert("host".into(), name.get());
+        });
     };
 
     let end_host = move |evt| {
@@ -189,6 +206,12 @@ pub fn Network(cx: Scope, state: RwSignal<NetworkState>) -> impl IntoView {
         if let NetworkState::Server { peer, .. } = state.get() {
             log!("destroying");
             peer.destroy();
+        }
+    };
+
+    let end_client = move |evt| {
+        if let NetworkState::Client(conn) = state.get() {
+            conn.close();
         }
     };
 
@@ -200,7 +223,15 @@ pub fn Network(cx: Scope, state: RwSignal<NetworkState>) -> impl IntoView {
                     view! {
                         cx, 
                         <div class="network-state-none">
+                            <input type="text" placeholder="name" prop:value={name}
+                                on:input={move |ev| name.set(event_target_value(&ev))} />
+                            <hr />
                             <button on:click={host} class="network-button-host">"Host"</button>
+                            <hr />
+                            <input type="text" placeholder="Room ID" 
+                                prop:value={room_id}
+                                on:input={move |ev| room_id.set(event_target_value(&ev))} />
+                            <button on:click={join} class="network-button-join">"Join"</button>
                         </div>
                     }.into_any()
                 },
@@ -208,13 +239,51 @@ pub fn Network(cx: Scope, state: RwSignal<NetworkState>) -> impl IntoView {
                     view! {
                         cx,
                         <div class="network-state-host">
-                            <div class="network-host-id">"ID: " {format!("{}", &peer.id()["ripoff-robots-".len()..])}</div>
-                            <div>"Connections: "{conns.len()}</div>
+                            <div class="network-host-id">"Room ID: " {format!("{}", &peer.id()["ripoff-robots-".len()..])}</div>
+                            <div class="network-players">
+                                <h3>"Players"</h3>
+                                <For each={move || room_state.get().players.iter().map(|(id, name)| (id.to_owned(), name.to_owned())).collect::<Vec<_>>()}
+                                    key=|(id,name)| id.to_string()
+                                    view=move |cx, (id, name)| {
+                                        view!{
+                                            cx, 
+                                            <div class="network-player">
+                                                <span class="network-player-name">{name}</span>
+                                                <span class="network-player-score">{move || room_state.get().scores.get(&id).map(|x|*x).unwrap_or(0)}</span>
+                                            </div>
+                                        }
+                                    }
+                                    />
+                            </div>
                             <button on:click={end_host}>"End"</button>
                         </div>
                     }.into_any()
                 },
-                _ => unimplemented!()
+                NetworkState::Client(conn) => {
+                    log!("rendering client");
+                    view! {
+                        cx,
+                        <div class="network-state-client">
+                            <div class="network-host-id">"Room ID: " {format!("{}", &conn.peer()["ripoff-robots-".len()..])}</div>
+                            <div class="network-players">
+                                <h3>"Players"</h3>
+                                <For each={move || room_state.get().players.iter().map(|(id, name)| (id.to_owned(), name.to_owned())).collect::<Vec<_>>()}
+                                    key=|(id,name)| id.to_string()
+                                    view=move |cx, (id, name)| {
+                                        view!{
+                                            cx, 
+                                            <div class="network-player">
+                                                <span class="network-player-name">{name}</span>
+                                                <span class="network-player-score">{move || room_state.get().scores.get(&id).map(|x|*x).unwrap_or(0)}</span>
+                                            </div>
+                                        }
+                                    }
+                                    />
+                            </div>
+                            <button on:click={end_client}>"Leave"</button>
+                        </div>
+                    }.into_any()
+                }
             }}
         </div>
     }
@@ -247,9 +316,7 @@ pub fn main() {
                     }).into_js_value());
 
                     peer.on("close", &Closure::<dyn Fn()>::new(move || {
-                        network_state.update(|state| {
-                            *state = NetworkState::None;
-                        })
+                        network_state.set(NetworkState::None);
                     }).into_js_value());
 
                     peer.on("connection", &Closure::<dyn Fn(_)>::new(move |conn: peer::DataConnection| {
@@ -310,12 +377,41 @@ pub fn main() {
                         }
                     });
                 },
+
+                NetworkState::Client(ref conn) => {
+                    log!("setting event handlers...");
+
+                    conn.on("close", &Closure::<dyn Fn()>::new(move || {
+                        log!("closing connection...");
+                        network_state.set(NetworkState::None);
+                    }).into_js_value());
+
+                    conn.on("data", &Closure::<dyn Fn(JsValue)>::new(move |data| {
+                        let data: Result<net::Message, _> = serde_wasm_bindgen::from_value(data);
+                        match data {
+                            Err(err) => { log!("error parsing incoming message: {:?}", err) },
+                            Ok(net::Message::BoardState(state)) => {
+                                set_board(state.board);
+                            },
+                            Ok(net::Message::PlayerJoin(msg)) => {
+                                for (id, name) in msg.ids.into_iter().zip(msg.names.into_iter()) {
+                                    room_state.update(|state| {state.players.insert(id, name);});
+                                }
+                            },
+                            Ok(net::Message::PlayerLeave(msg)) => {
+                                room_state.update(|state| { state.players.remove(&msg.id); });
+                            }
+                            _ => unimplemented!(),
+                        }
+                    }).into_js_value());
+                },
+
                 _ => {}
             }
         });
 
         view! { cx,  
-            <Network state={network_state} />
+            <Network state={network_state} room_state={room_state} />
             <BoardWidget board={board} positions={Some(positions)} moves={moves} />
             <MoveList moves={moves.read_only()} /> }
     })
