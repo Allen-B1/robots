@@ -1,4 +1,4 @@
-#![feature(drain_filter)]
+#![feature(extract_if)]
 #![feature(extern_types)]
 use std::{collections::{HashSet, BinaryHeap, HashMap}, cmp::Ordering};
 
@@ -19,12 +19,12 @@ mod net;
 pub fn BoardWidget(cx: Scope, board: ReadSignal<Board>, positions: Option<RwSignal<RobotPositions>>, moves: RwSignal<Vec<(usize, Direction)>>) -> impl IntoView {
     // invariant: if set_position is None, moves is empty
     let (positions, set_positions) = match positions {
-        None => (Signal::derive(cx, move || board().initial_positions), None),
+        None => (Signal::derive(cx, move || board.get().initial_positions), None),
         Some(rw) => (rw.into(), Some(rw.write_only()))
     };
 
     let keydown = move |robot, evt: KeyboardEvent| {
-        let positions = positions();
+        let positions = positions.get();
 
         let dir = match evt.code().as_str() {
             "ArrowDown" => Direction::Down,
@@ -34,12 +34,21 @@ pub fn BoardWidget(cx: Scope, board: ReadSignal<Board>, positions: Option<RwSign
             _ => {return}
         };
 
-        let new_positions = board().move_robot(positions, robot, dir);
+        let new_positions = board.get().move_robot(positions, robot, dir);
         if new_positions != positions {
             set_positions.unwrap().set(new_positions);
             moves.update(|moves| moves.push((robot, dir)));
         }
     };
+
+    let tiles_memo = Signal::derive(cx, move || 0..board.get().width*board.get().height());
+    let horizontal_memo = Signal::derive(cx, move || {
+        let vec = board.get().horizontal_walls.iter().map(|x| *x).enumerate().filter(|&(i, b)| b).map(|(i, b)| i).collect::<Vec<_>>();
+        log!("{}", vec.len());
+        vec
+    });
+    let vertical_memo = Signal::derive(cx, move || 
+        board.get().vertical_walls.iter().map(|x| *x).enumerate().filter(|&(i, b)| b).map(|(i, b)| i).collect::<Vec<_>>());
 
     view !{
         cx, 
@@ -47,11 +56,11 @@ pub fn BoardWidget(cx: Scope, board: ReadSignal<Board>, positions: Option<RwSign
             {move || if moves.get().len() != 0 {
                 Some(view!{ cx, <div class="refresh" on:click={move |_| {
                     moves.update(|v| v.clear());
-                    set_positions.unwrap().set(board().initial_positions);
+                    set_positions.unwrap().set(board.get().initial_positions);
                 }}></div> })
             } else { None }}
             <For 
-                each=move || 0..board.get().width*board.get().height()
+                each=move || tiles_memo.get()
                 key=|&i| i
                 view=move |cx, i| {
                     view! {
@@ -73,46 +82,41 @@ pub fn BoardWidget(cx: Scope, board: ReadSignal<Board>, positions: Option<RwSign
                             on:keydown={move |evt| if set_positions.is_some() { keydown(i, evt) }}
                             style={move || {
                                 let width = board.get().width;
-                                let pos = positions()[i];
+                                let pos = positions.get()[i];
                                 format!("top:{}px;left:{}px", 32 * (pos/width), 32 * (pos%width))}
                         }></div>
                     }
                 }
                 />
             
+            // 
             <For
-                each={move || (board.get().horizontal_walls.iter().map(|x| *x).enumerate().collect::<Vec<_>>())}
-                key=|(i, _)| *i
-                view=move |cx, (i, exists)| {
+                each=move || horizontal_memo.get()
+                key=|&i| i
+                view=move |cx, i| {
+                    log!("rerendering horizontal walls");
                     view!{
                         cx, 
-                        <Show
-                            when=move || exists
-                            fallback = |_|()>
-                            <div class="wall-horizontal"
-                                style={
-                                    let width = board.get().width;
-                                    format!("top:{}px;left:{}px", 32 * (i/width+1), 32 * (i%width))
-                                }></div>
-                        </Show>
+                        <div class="wall-horizontal"
+                            style={
+                                let width = board.get().width;
+                                format!("top:{}px;left:{}px", 32 * (i/width+1), 32 * (i%width))
+                            }></div>
                     }
                 }/>
 
             <For
-                each={move || (board.get().vertical_walls.iter().map(|x| *x).enumerate().collect::<Vec<_>>())}
-                key=|(i, _)| *i
-                view=move |cx, (i, exists)| {
+                each=move || vertical_memo.get()
+                key=|&i| i
+                view=move |cx, i| {
+                    log!("rerendering vertical walls");
                     view!{
                         cx, 
-                        <Show
-                            when=move || exists
-                            fallback = |_|()>
-                            <div class="wall-vertical"
-                                style={
-                                    let width = board.get().width;
-                                    format!("top:{}px;left:{}px", 32 * (i/(width-1)), 32 * (i%(width-1)+1))
-                                }></div>
-                        </Show>
+                        <div class="wall-vertical"
+                            style={
+                                let width = board.get().width;
+                                format!("top:{}px;left:{}px", 32 * (i/(width-1)), 32 * (i%(width-1)+1))
+                            }></div>
                     }
                 }/>
         </div>
@@ -125,7 +129,7 @@ pub fn MoveList(cx: Scope, moves: ReadSignal<Vec<(usize, Direction)>>) -> impl I
     view! { cx,
         <div class="move-list">
             <For
-                each={move || moves().into_iter().enumerate().collect::<Vec<_>>()}
+                each={move || moves.get().into_iter().enumerate().collect::<Vec<_>>()}
                 key={|&(i, _)| i}
                 view=move |cx, (_, (robot, dir))| {
                     view! {cx, <span class={format!("move move-{} move-{}", robot, dir.id())}></span>}
@@ -178,7 +182,7 @@ pub struct RoomState {
 }
 
 #[component]
-pub fn Network(cx: Scope, state: RwSignal<NetworkState>, room_state: RwSignal<RoomState>) -> impl IntoView {
+pub fn Network(cx: Scope, state: RwSignal<NetworkState>, room_state: RwSignal<RoomState>, board: WriteSignal<Board>) -> impl IntoView {
     // NOTE: Never directly set `state` to `None`
     let room_id = create_rw_signal(cx, String::new());
     let name = create_rw_signal(cx, String::new());
@@ -224,6 +228,10 @@ pub fn Network(cx: Scope, state: RwSignal<NetworkState>, room_state: RwSignal<Ro
         }
     };
 
+    let randomize_board = move |evt| {
+        board.set(Board::generate(16, 16));
+    };
+
     view! {
         cx,
         <div class="network-state">
@@ -241,6 +249,8 @@ pub fn Network(cx: Scope, state: RwSignal<NetworkState>, room_state: RwSignal<Ro
                                 prop:value={room_id}
                                 on:input={move |ev| room_id.set(event_target_value(&ev))} />
                             <button on:click={join} class="network-button-join">"Join"</button>
+                            <hr />
+                            <button on:click={randomize_board}>"New Board"</button>
                         </div>
                     }.into_any()
                 },
@@ -300,10 +310,11 @@ pub fn Network(cx: Scope, state: RwSignal<NetworkState>, room_state: RwSignal<Ro
 
 pub fn main() {
     mount_to_body(|cx| {
+
         let room_state: RwSignal<RoomState> = create_rw_signal(cx, Default::default());
         let network_state = create_rw_signal(cx, NetworkState::None);
-        let (board, set_board) = create_signal(cx, Board::generate(16, 16));
-        let positions = create_rw_signal(cx, board().initial_positions);
+        let board = create_rw_signal(cx, Board::generate(16, 16));
+        let positions = create_rw_signal(cx, board.get_untracked().initial_positions);
         let moves = create_rw_signal(cx, Vec::new());
 
         // clear room state when network state is set to None
@@ -316,6 +327,8 @@ pub fn main() {
         });
 
         create_effect(cx, move |_| {
+            log!("network state effect run");
+
             let state = network_state.get();
             match state {
                 NetworkState::None => {},
@@ -368,7 +381,7 @@ pub fn main() {
                             // Send board state
                             peer::send(&conn_clone, 
                                 &net::Message::BoardState(net::BoardStateMessage {
-                                    board: board.get(),
+                                    board: board.get_untracked(),
                                 })
                             );
 
@@ -395,7 +408,7 @@ pub fn main() {
                             let id_clone = id.clone();
                             network_state.update(move |state| {
                                 if let NetworkState::Server { conns, .. } = state {
-                                    conns.drain_filter(|conn| conn.peer() == id);
+                                    conns.extract_if(|conn| conn.peer() == id);
 
                                     peer::broadcast(&conns, 
                                         &net::Message::PlayerLeave(net::PlayerLeaveMessage {
@@ -442,7 +455,7 @@ pub fn main() {
                         match data {
                             Err(err) => { error!("error parsing incoming message: {:?}", err) },
                             Ok(net::Message::BoardState(state)) => {
-                                set_board(state.board);
+                                board.set(state.board);
                             },
                             Ok(net::Message::PlayerJoin(msg)) => {
                                 for ((id, name), score) in msg.ids.into_iter().zip(msg.names.into_iter()).zip(msg.scores.into_iter()) {
@@ -464,9 +477,11 @@ pub fn main() {
             }
         });
 
+
         view! { cx,  
-            <Network state={network_state} room_state={room_state} />
-            <BoardWidget board={board} positions={Some(positions)} moves={moves} />
+            <Network board={board.write_only()} state={network_state} room_state={room_state} />
+            <BoardWidget board={board.read_only()} positions={Some(positions)} moves={moves} />
             <MoveList moves={moves.read_only()} /> }
+
     })
 }
